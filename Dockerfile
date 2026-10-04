@@ -7,5 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 ENV PYTHONPATH=/service/kronos PYTHONUNBUFFERED=1
 EXPOSE 8000
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "10000"]

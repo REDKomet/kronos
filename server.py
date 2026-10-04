@@ -155,3 +155,8 @@ def status(job_id: str,user_id: str):
         if not job or job["user_id"] != user_id:
             raise HTTPException(404,"Job unavailable or expired")
         return {key:job[key] for key in ("status","result","error") if key in job}
+if __name__ == "__main__":
+    import uvicorn
+    
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("server:app", host="0.0.0.0", port=port)

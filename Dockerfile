@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 ENV PYTHONPATH=/service/kronos PYTHONUNBUFFERED=1
 EXPOSE 8000
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]

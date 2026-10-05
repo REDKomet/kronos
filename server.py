@@ -5,7 +5,7 @@ import uuid
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+
 from datetime import datetime, timezone
 from typing import Literal
 import numpy as np
@@ -101,7 +101,7 @@ def generate(job_id, request):
             jobs[job_id]["status"] = "failed"
             jobs[job_id]["error"] = str(e)
 
-@asynccontextmanager
+
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)

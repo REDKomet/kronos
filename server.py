@@ -10,12 +10,11 @@ from datetime import datetime, timezone
 from typing import Literal
 import numpy as np
 import pandas as pd
-import torch
+
 import exchange_calendars as xcals
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-from model import Kronos, KronosTokenizer, KronosPredictor
-
+from openai import OpenAI
 STOCKS = {"NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "JPM"}
 jobs = {}
 lock = threading.Lock()
@@ -84,55 +83,37 @@ def generate(job_id, request):
     try:
         with lock:
             jobs[job_id]["status"] = "running"
-        frame = pd.DataFrame([c.model_dump() for c in request.candles])
-        frame["amount"] = frame["close"]*frame["volume"]
-        times = future_times(request.candles[-1].time, request.interval, request.horizon)
-        x_dates = pd.to_datetime(frame["time"], unit="ms", utc=True).dt.tz_convert("America/New_York").dt.tz_localize(None)
-        y_dates = pd.Series(pd.to_datetime(times, unit="ms", utc=True).tz_convert("America/New_York").tz_localize(None))
-        paths = []
-        for _ in range(request.samples):
-            if time.monotonic()-started > 180:
-                raise TimeoutError("Inference time limit exceeded")
-            with torch.inference_mode():
-                predicted = predictor.predict(df=frame[["open","high","low","close","volume","amount"]], x_timestamp=x_dates, y_timestamp=y_dates, pred_len=request.horizon, T=1.0, top_p=0.9, sample_count=1, verbose=False)
-            path = predicted[["open","high","low","close"]].to_numpy(dtype=float)
-            if path.shape != (request.horizon,4) or not np.isfinite(path).all() or (path <= 0).any():
-                raise ValueError("Model produced invalid prices")
-            # Enforce valid OHLC envelopes for every decoded path.
-            path[:,1] = np.max(path, axis=1)
-            path[:,2] = np.min(path, axis=1)
-            paths.append(path)
-        if time.monotonic()-started > 180:
-            raise TimeoutError("Inference time limit exceeded")
-        array = np.stack(paths)
-        median = np.median(array,axis=0)
-        lower, upper = np.quantile(array[:,:,3], [.05,.95],axis=0)
-        candles = [{"time": t, "open": float(median[i,0]), "high": float(median[i,1]), "low": float(median[i,2]), "close": float(median[i,3]), "lower": float(lower[i]), "upper": float(upper[i])} for i,t in enumerate(times)]
-        result = {"candles":candles, "samples":request.samples, "model":"Kronos-small", "generated_at":datetime.now(timezone.utc).isoformat(), "generation_seconds":round(time.monotonic()-started,3), "amount_method":"close_times_volume", "calendar":"XNYS", "percentiles":[5,95]}
+        
+        # Format your candle data for the API prompt
+        prompt_data = f"Analyze these {len(request.candles)} candles and predict the next {request.horizon} prices."
+        
+        response = client.chat.completions.create(
+            model="meta/llama-3.3-70b-instruct",
+            messages=[{"role": "user", "content": prompt_data}]
+        )
+        
         with lock:
-            jobs[job_id].update(status="completed",result=result)
-    except Exception as error:
-        print(f"Kronos job {job_id} failed: {type(error).__name__}",flush=True)
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["result"] = response.choices[0].message.content
+            
+    except Exception as e:
         with lock:
-            jobs[job_id].update(status="failed",error="Kronos could not generate valid scenarios within the time limit. Please retry.")
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = str(e)
 
 @asynccontextmanager
-async def lifespan(app):
-    global predictor
-    if not os.environ.get("KRONOS_SERVICE_KEY"):
-        raise RuntimeError("Set KRONOS_SERVICE_KEY before starting")
-    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base").eval()
-    model = Kronos.from_pretrained("NeoQuasar/Kronos-small").eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    predictor = KronosPredictor(model,tokenizer,device=device,max_context=512)
-    yield
-    executor.shutdown(wait=False,cancel_futures=True)
 
-app = FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.environ.get("NVIDIA_API_KEY")
+)
 
 @app.get("/health")
 def health():
-    return {"ready":predictor is not None,"model":"Kronos-small"}
+    return {"ready": True, "model": "meta/llama-3.3-70b-instruct"}
+   
 
 @app.post("/jobs",dependencies=[Depends(authenticated)])
 def start(request: Forecast):
